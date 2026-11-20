@@ -1,0 +1,14 @@
+/bin/
+/.build/
+/.vs/
+/combined-*/
+/idle-*/
+/sessions/
+*.bin
+*.csv
+*.log
+*.log.1
+*.obj
+*.pdb
+*.user
+dashboard-data.txt

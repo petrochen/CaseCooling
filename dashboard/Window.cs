@@ -67,6 +67,7 @@ internal sealed class MonitorWindow : Window
     readonly Plot chart=new Plot {Height=191};
     readonly StackPanel overview=new StackPanel();
     readonly List<Plot> strips=new List<Plot>();
+    readonly TextBlock loadScale=StyleKit.Text("",12,Muted);
     readonly List<TextBlock[]> stripLabels=new List<TextBlock[]>();
     readonly TextBlock inspectTime=StyleKit.Text("",12,Muted);
     readonly StackPanel legend=StyleKit.Row();
@@ -158,13 +159,20 @@ internal sealed class MonitorWindow : Window
             int index=modes.Count-1;var b=StyleKit.Button(label,delegate{group=index;BuildLegend();Render();});b.Padding=new Thickness(9,4,9,4);modes.Add(b);tabs.Children.Add(b);
         }
         p.Children.Add(overview);
-        for(int i=0;i<3;i++){
-            var tr=i==2?Groups[2].Take(2).ToArray():Groups[i];
-            var line=StyleKit.Columns(1,0);var label=StyleKit.Text(new[]{"Температура · °C","Загрузка · %","Обороты · об/мин"}[i],13,Muted,true);StyleKit.Put(line,label,0);
+        for(int i=0;i<4;i++){
+            bool load=i==1 || i==2;
+            var tr=load?new[]{Groups[1][i-1]}:i==3?Groups[2].Take(2).ToArray():Groups[0];
+            var line=StyleKit.Columns(1,0);
+            var label=StyleKit.Text(new[]{"Температура · °C","Загрузка CPU","Загрузка GPU","Обороты · об/мин"}[i],13,Muted,true);
+            if(load)label.Foreground=tr[0].Color;
+            var heading=StyleKit.Row();heading.Children.Add(label);StyleKit.Put(line,heading,0);
+            if(i==1){loadScale.Margin=new Thickness(12,0,0,0);heading.Children.Add(loadScale);}
             var keys=StyleKit.Row();var labels=new TextBlock[tr.Length];
             for(int j=0;j<tr.Length;j++){labels[j]=StyleKit.Text(tr[j].Label,13,Ink,true);labels[j].Foreground=tr[j].Color;labels[j].Margin=new Thickness(9,0,0,0);keys.Children.Add(labels[j]);}
             stripLabels.Add(labels);StyleKit.Put(line,keys,1);overview.Children.Add(line);
-            var strip=new Plot{Series=tr,Compact=true,Height=i==2?70:46,Unit=new[]{"°C","%","об/мин"}[i],TimeLabels=i==2,Margin=new Thickness(0,1,0,5)};
+            var strip=new Plot{Series=tr,Compact=true,LoadTrend=load,Height=i==3?70:load?58:46,
+                Unit=load?"%":i==0?"°C":"об/мин",TimeLabels=i==3,Margin=new Thickness(0,1,0,5)};
+            if(load)strip.ToolTip="Линия — средняя загрузка за интервал, светлые штрихи — минимум и максимум. Секундные значения доступны на вкладке «Загрузка».";
             strips.Add(strip);overview.Children.Add(strip);strip.Inspect+=ShowInstant;
         }
         overview.Children.Add(inspectTime);
@@ -291,15 +299,18 @@ internal sealed class MonitorWindow : Window
         owner.Text=(archive?"Управление во время теста":"Управление")+"  ·  "+(frame.Owner??"—");
         interval.Text=(frame.Source??"")+"   ·   "+(archive?"Архив":frame.PerSecond?"Шаг 1 с":"Журнал измерений");
         foreach(var update in cardUpdates)update(active?displayed:null);
-        foreach(var mini in minis){mini.Rows=frame.Rows;mini.End=frame.End;mini.RefreshPlot();}
+        double maxGap=frame.PerSecond?1:4;
+        foreach(var mini in minis){mini.Rows=frame.Rows;mini.End=frame.End;mini.MaxGapSeconds=maxGap;mini.RefreshPlot();}
         bool stacked=group==-1;
         overview.Visibility=stacked?Visibility.Visible:Visibility.Collapsed;
         chart.Visibility=legend.Visibility=unit.Visibility=stacked?Visibility.Collapsed:Visibility.Visible;
         if(stacked){
-            foreach(var s in strips){s.Rows=frame.Rows;s.End=frame.End;s.Minutes=minutes;s.RefreshPlot();}
+            foreach(var s in strips){s.Rows=frame.Rows;s.End=frame.End;s.Minutes=minutes;s.MaxGapSeconds=maxGap;s.RefreshPlot();}
+            int seconds=strips[1].LoadIntervalSeconds;
+            loadScale.Text=seconds==1?"Шаг 1 с":"Среднее за "+(seconds<60?seconds+" с":seconds/60+" мин")+"  ·  штрих — мин–макс";
             ShowInstant(strips[0].SharedTime);
         }else{
-            chart.Rows=frame.Rows;chart.End=frame.End;chart.Minutes=minutes;
+            chart.Rows=frame.Rows;chart.End=frame.End;chart.Minutes=minutes;chart.MaxGapSeconds=maxGap;
             chart.Series=Groups[group].Where(t=>!hidden.Contains(t.Key)).ToArray();
             chart.Unit=new[]{"°C","%","об/мин","dBFS"}[group];unit.Text=chart.Unit; chart.RefreshPlot();
         }
@@ -308,15 +319,15 @@ internal sealed class MonitorWindow : Window
     {
         Sample sample=archive||frame.Fresh?frame.Rows.LastOrDefault():null;
         if(at.HasValue){
-            int i=Plot.Lower(frame.Rows,at.Value);
-            if(i==frame.Rows.Count || (i>0 && (at.Value-frame.Rows[i-1].Time).Duration()<(frame.Rows[i].Time-at.Value).Duration()))--i;
-            sample=i>=0 && (frame.Rows[i].Time-at.Value).Duration().TotalSeconds<=Math.Max(3,minutes*0.12)?frame.Rows[i]:null;
+            sample=Plot.Nearest(frame.Rows,at.Value,frame.End.AddMinutes(-minutes),frame.End,frame.PerSecond?1:4);
         }
         for(int i=0;i<strips.Count;i++){
             var s=strips[i]; s.SharedTime=at;s.InvalidateVisual();
-            for(int j=0;j<s.Series.Length;j++)stripLabels[i][j].Text=s.Series[j].Label+" "+Format(sample,s.Series[j].Key,i==0?1:0);
+            for(int j=0;j<s.Series.Length;j++)stripLabels[i][j].Text=s.LoadTrend?
+                (at.HasValue || archive?"":"Сейчас  ")+Format(sample,s.Series[j].Key,0)+" %":
+                s.Series[j].Label+" "+Format(sample,s.Series[j].Key,i==0?1:0);
         }
-        inspectTime.Text=at.HasValue?at.Value.ToLocalTime().ToString("dd.MM   HH:mm:ss"):"";
+        inspectTime.Text=at.HasValue?(sample==null?at.Value:sample.Time).ToLocalTime().ToString("dd.MM   HH:mm:ss")+(sample==null?"   ·   Нет замера":""):"";
     }
 }
 

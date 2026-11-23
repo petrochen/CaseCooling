@@ -25,6 +25,8 @@ Copy-Item -LiteralPath "$PSScriptRoot\assets\CaseCooling.exe.config" -Destinatio
 $fonts = New-Item -ItemType Directory -Force -Path "$bin\Fonts"
 Get-ChildItem "$PSScriptRoot\assets\Fonts" -File | Copy-Item -Destination $fonts.FullName -Force
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+& $compiler /nologo /optimize+ /platform:x64 /target:winexe "/out:$bin\CaseCooling.Tray.exe" /r:System.Windows.Forms.dll /r:System.Drawing.dll "$PSScriptRoot\tray\Program.cs"
+if ($LASTEXITCODE) { throw "Tray compiler exit $LASTEXITCODE" }
 $files = (Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.cs').FullName
 & $compiler /nologo /optimize+ /platform:x64 /target:exe "/out:$bin\CaseCooling.exe" /r:System.Management.dll /r:System.ServiceProcess.dll "/r:$bin\LibreHardwareMonitorLib.dll" "/r:$bin\HidSharp.dll" $files
 if ($LASTEXITCODE) { throw "Compiler exit $LASTEXITCODE" }

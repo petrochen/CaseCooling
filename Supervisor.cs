@@ -46,13 +46,21 @@ internal sealed class Supervisor
     internal readonly ManualResetEvent Stop = new ManualResetEvent(false);
     readonly Action<string> log;
     internal Supervisor(Action<string> logLine) { log=logLine; }
+    // A suspended machine cannot poll sensors. Count only time Windows was awake.
+    [DllImport("kernel32.dll",SetLastError=true)]
+    static extern bool QueryUnbiasedInterruptTime(out long ticks);
+    static long AwakeMilliseconds()
+    {
+        long ticks;
+        if (!QueryUnbiasedInterruptTime(out ticks)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return ticks / TimeSpan.TicksPerMillisecond;
+    }
     internal int Watch(string mode, bool simulation, out bool touched)
     {
         int timeout=simulation ? 1400 : 18000;
-        long last=Stopwatch.GetTimestamp();
+        long started=AwakeMilliseconds(), last=started;
         int takeover=0;
         int ready=0;
-        var elapsed=Stopwatch.StartNew();
         string arg=simulation ? "fixture-"+mode : "worker-"+mode;
         var info=new ProcessStartInfo(Program.Exe,arg) {
             WorkingDirectory=AppDomain.CurrentDomain.BaseDirectory, UseShellExecute=false,
@@ -62,7 +70,7 @@ internal sealed class Supervisor
         {
             child.OutputDataReceived+=delegate(object sender,DataReceivedEventArgs e) {
                 if (e.Data==null) return;
-                Interlocked.Exchange(ref last,Stopwatch.GetTimestamp());
+                Interlocked.Exchange(ref last,AwakeMilliseconds());
                 if (e.Data=="TAKEOVER") Interlocked.Exchange(ref takeover,1);
                 if (e.Data=="READY-FOR-FAULT") Interlocked.Increment(ref ready);
                 log(e.Data);
@@ -75,7 +83,7 @@ internal sealed class Supervisor
                 child.BeginOutputReadLine(); child.BeginErrorReadLine();
                 child.StandardInput.WriteLine("ARM"); child.StandardInput.Flush();
                 bool stopping=false;
-                var stopTime=new Stopwatch();
+                long stopAt=0;
                 while (!child.WaitForExit(200))
                 {
                     if (mode=="idle" && Volatile.Read(ref ready)>=3)
@@ -87,12 +95,12 @@ internal sealed class Supervisor
                     }
                     if (Stop.WaitOne(0) && !stopping)
                     {
-                        stopping=true; stopTime.Start();
+                        stopping=true; stopAt=AwakeMilliseconds();
                         try { child.StandardInput.Close(); } catch(IOException) { }
                     }
-                    double silence=(Stopwatch.GetTimestamp()-Interlocked.Read(ref last))*1000.0/Stopwatch.Frequency;
-                    if (silence>timeout || stopTime.ElapsedMilliseconds>timeout ||
-                        (mode=="idle" && elapsed.Elapsed.TotalSeconds>50))
+                    long now=AwakeMilliseconds();
+                    if (now-Interlocked.Read(ref last)>timeout || (stopping && now-stopAt>timeout) ||
+                        (mode=="idle" && now-started>50000))
                     {
                         log("Watchdog deadline exceeded: "+mode);
                         child.Kill(); child.WaitForExit();
